@@ -4,7 +4,7 @@
 set -uo pipefail
 
 CONTAINER="${1:-orders-api}"
-API="${API:-http://localhost:8000}"
+API="${API:-http://localhost:18000}"
 hr() { printf '\n==== %s ====\n' "$1"; }
 
 hr "Hôte : charge, mémoire, disque"

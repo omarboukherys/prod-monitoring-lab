@@ -28,7 +28,7 @@ flowchart LR
 
 | Composant | Rôle | URL |
 |---|---|---|
-| orders-api | Service métier simulé (API de commandes) | http://localhost:8000 |
+| orders-api | Service métier simulé (API de commandes) | http://localhost:18000 |
 | batch-scheduler | Ordonnanceur : chaîne de 3 jobs avec dépendances, SLA et relance auto | – |
 | Prometheus | Collecte des métriques + règles d'alerte | http://localhost:9090 |
 | Alertmanager | Routage des alertes par sévérité, inhibition | http://localhost:9093 |

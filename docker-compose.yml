@@ -9,7 +9,7 @@ services:
   app:
     build: ./app
     container_name: orders-api
-    ports: ["8000:8000"]
+    ports: ["18000:8000"]   # 18000 côté PC : évite le conflit avec un serveur de dev sur 8000
     volumes: ["app-logs:/var/log/app"]
     deploy:
       resources:
@@ -21,6 +21,7 @@ services:
     build: ./app
     container_name: traffic-generator
     command: ["python", "-u", "traffic.py"]
+    healthcheck: { disable: true }
     environment: { TARGET: "http://app:8000" }
     depends_on: [app]
     restart: unless-stopped
@@ -57,17 +58,21 @@ services:
     image: prom/alertmanager:v0.27.0
     container_name: lab-alertmanager
     ports: ["9093:9093"]
-    volumes:
-      ["./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"]
+    volumes: ["./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"]
     restart: unless-stopped
 
   incident-receiver:
     build: ./app
     container_name: lab-incident-receiver
     command: ["python", "-u", "receiver.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
     ports: ["5001:5001"]
     env_file:
-      - path: .env # clés LLM et Telegram (voir .env.example)
+      - path: .env          # clés LLM et Telegram (voir .env.example)
         required: false
     environment:
       PROMETHEUS_URL: http://prometheus:9090
@@ -88,7 +93,9 @@ services:
     image: prom/node-exporter:v1.8.2
     container_name: lab-node-exporter
     command: ["--path.rootfs=/host"]
-    volumes: ["/:/host:ro,rslave"]
+    # sans "rslave" : compatible Docker Desktop (Windows / macOS) ; sur Docker Desktop
+    # les métriques sont celles de la VM Docker, pas directement celles du PC
+    volumes: ["/:/host:ro"]
     pid: host
     restart: unless-stopped
 
@@ -117,11 +124,7 @@ services:
     ports: ["9200:9200"]
     volumes: ["es-data:/usr/share/elasticsearch/data"]
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'curl -s http://localhost:9200/_cluster/health | grep -qE ''"status":"(green|yellow)"''',
-        ]
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
       interval: 15s
       retries: 20
     restart: unless-stopped

@@ -15,7 +15,7 @@ docker stats --no-stream orders-api
 ```
 - CPU du conteneur saturé ? mémoire proche de la limite (512 Mo) ?
 - Kibana : `service : "orders-api" and duration_ms > 500` → quels chemins sont lents
-- Tester soi-même : `curl -w '%{time_total}\n' -o /dev/null -s localhost:8000/api/orders`
+- Tester soi-même : `curl -w '%{time_total}\n' -o /dev/null -s localhost:18000/api/orders`
 
 ## 3. Corriger / contourner
 - Saturation ressources → redémarrer, puis demander une analyse de capacité

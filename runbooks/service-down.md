@@ -5,7 +5,7 @@
 **Impact** : service indisponible
 
 ## 1. Qualifier
-- `curl -s localhost:8000/health` répond-il ? (vérifie que ce n'est pas seulement la collecte qui est cassée)
+- `curl -s localhost:18000/health` répond-il ? (vérifie que ce n'est pas seulement la collecte qui est cassée)
 - Les autres cibles Prometheus sont-elles UP ? (http://localhost:9090/targets) Si tout est DOWN → problème réseau/hôte
 
 ## 2. Diagnostiquer

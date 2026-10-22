@@ -1,0 +1,7 @@
+# Fins de ligne Linux pour les fichiers exécutés dans les conteneurs ou sous bash,
+# même quand le repo est cloné sous Windows (sinon : "$'\r': command not found").
+*.sh   text eol=lf
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf

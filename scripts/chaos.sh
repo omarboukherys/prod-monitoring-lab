@@ -3,7 +3,7 @@
 # Usage : ./scripts/chaos.sh <scenario>
 set -euo pipefail
 
-API="${API:-http://localhost:8000}"
+API="${API:-http://localhost:18000}"
 
 usage() {
   cat <<EOF
