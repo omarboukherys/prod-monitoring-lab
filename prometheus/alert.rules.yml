@@ -63,11 +63,13 @@ groups:
   - name: host
     rules:
       - alert: DiskAlmostFull
+        # un point par disque (les montages Docker en double sont regroupés), volumes > 5 Go
         expr: |
-          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
-            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.10
+          (min by (device) (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|nsfs"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|nsfs"})
+            and on (device) max by (device) (node_filesystem_size_bytes) > 5e9) < 0.10
         for: 2m
         labels: { severity: warning }
         annotations:
-          summary: "Moins de 10 % d'espace libre sur {{ $labels.mountpoint }}"
+          summary: "Moins de 10 % d'espace libre sur {{ $labels.device }}"
           runbook: "runbooks/disk-full.md"

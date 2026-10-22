@@ -716,8 +716,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay\"}",
-          "legendFormat": "{{mountpoint}}",
+          "expr": "min by (device) (node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay|squashfs|nsfs\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|overlay|squashfs|nsfs\"}) and on (device) max by (device) (node_filesystem_size_bytes) > 5e9",
+          "legendFormat": "{{device}}",
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"

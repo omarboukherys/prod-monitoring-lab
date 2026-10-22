@@ -4,6 +4,37 @@ Environnement de production simulé pour pratiquer le **métier d'ingénieur de 
 
 Tout se lance en une commande avec Docker Compose. Des scénarios d'incidents réalistes peuvent être injectés, puis diagnostiqués et résolus avec des runbooks, comme en astreinte.
 
+## Aperçu : un incident de bout en bout
+
+Scénario `./scripts/chaos.sh errors` : 30 % des requêtes vers la base de données échouent.
+
+**1. Détection** : le dashboard montre un service UP, avec un trafic normal mais 31 % d'erreurs 5xx. La latence p95 reste verte (89 ms) : les requêtes échouent vite, ce n'est donc pas une saturation. La piste est une dépendance.
+
+![Dashboard Grafana pendant l'incident](docs/screenshots/grafana-incident.png)
+
+**2. Alerte** : la règle Prometheus passe en *firing* après 1 minute au-dessus de 5 %, avec le lien vers son runbook.
+
+![Alerte HighErrorRate dans Prometheus](docs/screenshots/prometheus-alerts.png)
+
+**3. Routage et triage automatique** : Alertmanager envoie l'alerte critique à l'astreinte (`on-call`). Dans la même seconde, l'agent collecte métriques et logs, puis produit son diagnostic : erreur dominante `DB_TIMEOUT`, actions et escalade, en 0,28 s.
+
+![Tickets d'incident dans Kibana](docs/screenshots/kibana-tickets.png)
+
+![Diagnostic produit par l'agent de triage](docs/screenshots/kibana-triage.png)
+
+**4. Diagnostic dans les logs** : chaque requête en échec laisse deux traces liées par le même `request_id`, l'erreur métier (`WRITE_FAILED`, `DB_TIMEOUT`) puis la réponse HTTP (500 / 503). L'histogramme situe le début de l'incident à la minute près.
+
+![Corrélation des logs par request_id](docs/screenshots/kibana-correlation.png)
+
+**Suivi des batchs** : la chaîne `nightly_orders` (EXTRACT → TRANSFORM → LOAD), avec le statut, la durée par rapport au SLA et le temps écoulé depuis le dernier succès.
+
+![Chaîne batch dans Grafana](docs/screenshots/grafana-batch.png)
+
+### Incidents réels rencontrés pendant la mise en place
+
+- **Conflit de port** : au premier démarrage, `orders-api` n'a pas pu démarrer car le port 8000 était déjà utilisé sur l'hôte. La supervision a levé `ServiceDown` en critique, routée vers l'astreinte, avec un triage indiquant `up=0`. Correctif : service exposé sur le port 18000.
+- **Coupure de l'hôte** : pendant une mise en veille de la machine, l'ordonnanceur était figé. Au réveil, `BatchNotRunRecently` s'est déclenchée sur les 3 jobs (warning, canal équipe), puis s'est résolue automatiquement dès le passage suivant de la chaîne.
+
 ## Architecture
 
 ```mermaid
