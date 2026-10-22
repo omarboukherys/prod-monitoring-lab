@@ -1,0 +1,150 @@
+name: prod-monitoring-lab
+
+x-logging: &default-logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  # ------------------------------------------------------------ application
+  app:
+    build: ./app
+    container_name: orders-api
+    ports: ["8000:8000"]
+    volumes: ["app-logs:/var/log/app"]
+    deploy:
+      resources:
+        limits: { memory: 512m }
+    restart: unless-stopped
+    logging: *default-logging
+
+  traffic:
+    build: ./app
+    container_name: traffic-generator
+    command: ["python", "-u", "traffic.py"]
+    environment: { TARGET: "http://app:8000" }
+    depends_on: [app]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ------------------------------------------------------------ batchs
+  batch:
+    build: ./batch
+    container_name: batch-scheduler
+    environment:
+      PUSHGATEWAY: pushgateway:9091
+      CHAIN_INTERVAL_SECONDS: "120"
+    volumes:
+      - batch-logs:/var/log/batch
+      - batch-control:/control
+    depends_on: [pushgateway]
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ------------------------------------------------------------ métriques & alerting
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-lifecycle
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    ports: ["9093:9093"]
+    volumes: ["./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"]
+    restart: unless-stopped
+
+  incident-receiver:
+    build: ./app
+    container_name: incident-receiver
+    command: ["python", "-u", "receiver.py"]
+    ports: ["5001:5001"]
+    env_file:
+      - path: .env          # clés LLM et Telegram (voir .env.example)
+        required: false
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      ELASTIC_URL: http://elasticsearch:9200
+      RUNBOOK_DIR: /runbooks
+    volumes:
+      - app-logs:/var/log/app
+      - ./runbooks:/runbooks:ro
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:v1.9.0
+    container_name: pushgateway
+    ports: ["9091:9091"]
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    command: ["--path.rootfs=/host"]
+    volumes: ["/:/host:ro,rslave"]
+    pid: host
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/production-overview.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ logs (ELK)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports: ["9200:9200"]
+    volumes: ["es-data:/usr/share/elasticsearch/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 15s
+      retries: 20
+    restart: unless-stopped
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.15.0
+    container_name: kibana
+    environment: { ELASTICSEARCH_HOSTS: "http://elasticsearch:9200" }
+    ports: ["5601:5601"]
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    restart: unless-stopped
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.15.0
+    container_name: filebeat
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - app-logs:/var/log/app:ro
+      - batch-logs:/var/log/batch:ro
+    depends_on:
+      elasticsearch: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  app-logs:
+  batch-logs:
+  batch-control:
+  es-data:

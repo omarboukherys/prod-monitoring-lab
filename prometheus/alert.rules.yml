@@ -1,0 +1,73 @@
+groups:
+  - name: orders-api
+    rules:
+      - alert: ServiceDown
+        expr: up{job="orders-api"} == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "orders-api ne répond plus"
+          runbook: "runbooks/service-down.md"
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="orders-api",status=~"5.."}[2m]))
+            / sum(rate(http_requests_total{job="orders-api"}[2m])) > 0.05
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "Taux d'erreurs 5xx > 5 % ({{ $value | humanizePercentage }})"
+          runbook: "runbooks/high-error-rate.md"
+
+      - alert: HighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="orders-api"}[2m]))) > 0.5
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Latence p95 > 500 ms ({{ $value | humanizeDuration }})"
+          runbook: "runbooks/high-latency.md"
+
+      - alert: MemoryLeakSuspected
+        expr: app_leaked_memory_mb > 200
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Mémoire applicative anormale ({{ $value }} Mo retenus)"
+          runbook: "runbooks/memory.md"
+
+  - name: batch
+    rules:
+      - alert: BatchJobFailed
+        expr: batch_job_last_status == 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Batch {{ $labels.job }} en échec"
+          runbook: "runbooks/batch-failed.md"
+
+      - alert: BatchChainBlocked
+        expr: batch_job_last_status == -1
+        labels: { severity: warning }
+        annotations:
+          summary: "Batch {{ $labels.job }} non lancé (dépendance KO)"
+          runbook: "runbooks/batch-failed.md"
+
+      - alert: BatchNotRunRecently
+        expr: time() - batch_job_last_success_timestamp > 600
+        labels: { severity: warning }
+        annotations:
+          summary: "Aucun succès de {{ $labels.job }} depuis plus de 10 min"
+          runbook: "runbooks/batch-failed.md"
+
+  - name: host
+    rules:
+      - alert: DiskAlmostFull
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"}) < 0.10
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: "Moins de 10 % d'espace libre sur {{ $labels.mountpoint }}"
+          runbook: "runbooks/disk-full.md"

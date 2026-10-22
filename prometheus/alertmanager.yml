@@ -1,0 +1,25 @@
+# Routage des alertes : les critiques vont à l'astreinte, les warnings au canal équipe.
+# Ici les deux receivers sont des webhooks factices (incident-receiver) pour voir le flux
+# sans configurer de vrai Slack / email. À remplacer par slack_configs ou email_configs.
+route:
+  receiver: team-channel
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 30m
+  routes:
+    - matchers: [severity="critical"]
+      receiver: on-call
+
+receivers:
+  - name: on-call
+    webhook_configs:
+      - url: http://incident-receiver:5001/alert?team=on-call
+  - name: team-channel
+    webhook_configs:
+      - url: http://incident-receiver:5001/alert?team=channel
+
+inhibit_rules:
+  # si le service est down, inutile d'alerter aussi sur ses erreurs et sa latence
+  - source_matchers: [alertname="ServiceDown"]
+    target_matchers: [severity="warning"]
