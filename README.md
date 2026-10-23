@@ -65,6 +65,7 @@ flowchart LR
 | Alertmanager | Routage des alertes par sévérité, inhibition | http://localhost:9093 |
 | Grafana | Dashboard « Production – Vue d'ensemble » (admin / admin) | http://localhost:3000 |
 | Kibana | Recherche dans les logs applicatifs, batch et tickets | http://localhost:5601 |
+| mcp-server | Outils MCP en lecture seule (Streamable HTTP) | http://localhost:8765/mcp |
 
 ## Démarrage
 
@@ -100,12 +101,80 @@ Le bot répond aussi à `/status` (état de la prod) et `/alerts` (alertes activ
 - **Traçable** : chaque triage (moteur utilisé, durée, texte) est journalisé et consultable dans Kibana : `service : "incident-receiver" and triage_engine : *`
 - **Agnostique** : toute API compatible OpenAI (Groq, Mistral, OpenAI, Ollama en local).
 
-Configuration :
+## Serveur MCP + agent d'investigation
+
+Le service `mcp-server` expose la production via le **Model Context Protocol** : tout client MCP (Claude Desktop, MCP Inspector, un agent maison) peut interroger la prod avec les mêmes outils, **tous en lecture seule**.
+
+| Outil MCP | Rôle |
+|---|---|
+| `get_prod_status` | disponibilité, trafic, taux d'erreurs, latence p95, mémoire, statut des batchs, nombre d'alertes |
+| `list_active_alerts` | alertes en cours avec sévérité, résumé, runbook, date de début |
+| `query_metrics` | requête PromQL libre (instantanée, 30 séries max) |
+| `search_logs` | recherche dans Elasticsearch par service, niveau, texte, fenêtre de temps |
+| `count_errors_by_type` | répartition des erreurs par service et par code, première et dernière occurrence |
+| `list_runbooks` / `get_runbook` | procédures de traitement d'incident |
+
+```mermaid
+flowchart LR
+    U[Ingénieur d'astreinte] -->|question libre| TG[Telegram]
+    TG --> AG[Agent<br/>incident-receiver]
+    AG <-->|tool calling| LLM[LLM]
+    AG -->|client MCP<br/>Streamable HTTP| MCP[mcp-server<br/>outils read-only]
+    CD[Claude Desktop<br/>MCP Inspector] -->|stdio / HTTP| MCP
+    MCP --> P[Prometheus]
+    MCP --> E[Elasticsearch]
+    MCP --> R[Runbooks]
+```
+
+**Deux usages de l'IA, deux conceptions différentes :**
+
+- **Triage d'alerte (automatique)** : contexte collecté de façon déterministe, puis un seul appel au LLM. Rapide et prévisible, avec un repli par règles. C'est ce qui tourne sans surveillance.
+- **Investigation (à la demande)** : sur Telegram, on pose une question libre (« pourquoi l'API renvoie des 503 ? »). L'agent choisit lui-même les outils MCP à appeler (6 étapes maximum), puis répond en citant les chiffres obtenus et la liste des outils utilisés. Chaque échange est tracé dans Kibana : `service : "incident-receiver" and tools_used : *`.
+
+**Sécurité** : aucun outil MCP ne modifie la prod ; les entrées sont bornées (nom de runbook validé, fenêtres et nombre de lignes plafonnés) ; les ports MCP (8765) et agent (5001) ne sont exposés que sur `127.0.0.1` ; le bot Telegram ne répond qu'au chat autorisé.
+
+### Configuration (LLM + Telegram)
+
+1. **Clé LLM gratuite** : créer une clé sur https://console.groq.com (menu *API Keys*).
+2. **Bot Telegram** : dans Telegram, écrire à **@BotFather**, puis `/newbot` → récupérer le token. Envoyer un message à son bot, puis ouvrir `https://api.telegram.org/bot<TOKEN>/getUpdates` → noter `"chat":{"id": ...}`.
+3. Renseigner le fichier `.env` (jamais commité) :
 
 ```bash
-cp .env.example .env     # renseigner LLM_* et TELEGRAM_*
-docker compose up -d --build incident-receiver
-curl localhost:5001/health   # indique si LLM et Telegram sont actifs
+cp .env.example .env     # remplir LLM_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+docker compose up -d --build incident-receiver mcp-server
+curl localhost:5001/health   # llm: true, telegram: true
+```
+
+4. Démo : `./scripts/chaos.sh errors`, attendre l'alerte sur Telegram, puis écrire au bot : *« Pourquoi l'API renvoie des erreurs ? »*
+
+Sans Telegram, le même agent répond en HTTP :
+
+```bash
+curl -s localhost:5001/ask -H 'Content-Type: application/json' \
+  -d '{"question": "Quel job batch pose problème et que faire ?"}'
+```
+
+### Démo réelle (Groq `openai/gpt-oss-120b` + Telegram)
+
+Scénario `errors` : l'alerte critique arrive avec son analyse LLM. Une question libre est ensuite posée au bot, et l'agent enchaîne lui-même les outils MCP (état → alertes → erreurs par type → runbook) avant de répondre avec les chiffres réels (répartition `DB_TIMEOUT` / `WRITE_FAILED`), les actions du runbook et la décision d'escalade.
+
+![Démo Telegram : alerte, triage LLM et investigation via MCP](docs/screenshots/telegram-demo.png)
+
+### Utiliser le serveur MCP depuis d'autres clients
+
+**MCP Inspector** (pour explorer et tester les outils) : `npx @modelcontextprotocol/inspector`, puis transport *Streamable HTTP* et URL `http://localhost:8765/mcp`.
+
+**Claude Desktop** : ajouter dans `claude_desktop_config.json` (le serveur tourne dans son conteneur, en stdio) :
+
+```json
+{
+  "mcpServers": {
+    "prod-monitoring": {
+      "command": "docker",
+      "args": ["exec", "-i", "lab-mcp-server", "python", "server.py", "stdio"]
+    }
+  }
+}
 ```
 
 ## Scénarios d'incidents
@@ -165,12 +234,14 @@ service : "incident-receiver" and severity : "critical" # historique des tickets
 | batch-scheduler | Control-M, VTOM, $Universe, Autosys |
 | Alertmanager + incident-receiver | ServiceNow, PagerDuty, Opsgenie |
 | Agent de triage IA | Dynatrace Davis AI, AIOps |
+| Serveur MCP | intégration des outils de supervision aux assistants IA |
 | healthcheck HTTP | supervision synthétique (EKARA, Dynatrace Synthetic) |
 
 ## Structure
 
 ```
-app/            service orders-api, générateur de trafic, récepteur d'incidents + agent IA
+app/            service orders-api, générateur de trafic, récepteur d'incidents, agents IA
+mcp-server/     serveur MCP : outils de supervision en lecture seule
 batch/          ordonnanceur de la chaîne nightly_orders
 prometheus/     scrape config, règles d'alerte, routage Alertmanager
 grafana/        datasource et dashboard provisionnés

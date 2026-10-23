@@ -7,7 +7,8 @@ incident-receiver + agent de triage IA.
    - demande un diagnostic à un LLM (API compatible OpenAI : Groq, Mistral, OpenAI, Ollama...)
    - à défaut de LLM configuré, produit un triage par règles
    - envoie le résultat sur Telegram
-3. Bot Telegram en lecture seule : /status, /alerts, /help
+3. Bot Telegram en lecture seule : /status, /alerts, /help, et questions libres
+   -> agent d'investigation qui utilise les outils du serveur MCP "prod-monitoring" (agent.py)
 
 Principe de sécurité : l'agent LIT et RECOMMANDE, il n'exécute aucune action sur la prod.
 """
@@ -19,6 +20,8 @@ import time
 import requests
 from flask import Flask, jsonify, request
 
+import agent
+
 app = Flask(__name__)
 
 LOG_FILE = os.path.join(os.environ.get("LOG_DIR", "/var/log/app"), "incidents.log")
@@ -28,7 +31,7 @@ RUNBOOK_DIR = os.environ.get("RUNBOOK_DIR", "/runbooks")
 
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")  # ex. https://api.groq.com/openai/v1
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "llama-3.3-70b-versatile")
+LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-oss-120b")
 
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -65,7 +68,7 @@ def snapshot():
     return {
         "service_up": prom_value('up{job="orders-api"}'),
         "req_per_s": prom_value('sum(rate(http_requests_total{job="orders-api"}[2m]))'),
-        "error_rate": prom_value('sum(rate(http_requests_total{job="orders-api",status=~"5.."}[2m]))'
+        "error_rate": prom_value('(sum(rate(http_requests_total{job="orders-api",status=~"5.."}[2m])) or vector(0))'
                                  ' / sum(rate(http_requests_total{job="orders-api"}[2m]))'),
         "p95_latency_s": prom_value('histogram_quantile(0.95, sum by (le) '
                                     '(rate(http_request_duration_seconds_bucket{job="orders-api"}[2m])))'),
@@ -107,8 +110,9 @@ On te donne une alerte, un état des métriques, les dernières erreurs de logs 
 Réponds en français, en texte brut (pas de markdown), en 4 parties courtes :
 RÉSUMÉ : 1 phrase sur l'impact.
 CAUSE PROBABLE : appuyée uniquement sur les données fournies. Si les données ne suffisent pas, dis-le.
-ACTIONS : 3 étapes concrètes maximum, tirées du runbook.
-ESCALADE : oui/non, et vers qui, avec la raison.
+ACTIONS : 3 étapes concrètes maximum, tirées du runbook fourni (pas d'action hors runbook).
+ESCALADE : alerte critical -> escalade N2 si non résolu dans le délai prévu par le runbook ;
+warning -> pas d'escalade sauf aggravation. Indique vers qui et dans quel délai.
 N'invente aucune donnée absente du contexte."""
 
 
@@ -227,7 +231,37 @@ def alert():
 
 @app.get("/health")
 def health():
-    return jsonify(status="UP", llm=bool(LLM_BASE_URL and LLM_API_KEY), telegram=bool(TG_TOKEN and TG_CHAT))
+    return jsonify(status="UP", llm=bool(LLM_BASE_URL and LLM_API_KEY), telegram=bool(TG_TOKEN and TG_CHAT),
+                   mcp_url=agent.MCP_URL)
+
+
+def ask(question, channel):
+    """Question libre -> agent MCP. Renvoie (réponse, trace) et journalise l'échange."""
+    if not agent.llm_enabled():
+        return ("L'agent d'investigation a besoin d'un LLM : renseigner LLM_BASE_URL et LLM_API_KEY "
+                "dans le fichier .env (voir .env.example)."), []
+    started = time.time()
+    try:
+        answer, trace = agent.investigate(question)
+    except Exception as exc:
+        answer, trace = f"Investigation impossible : {exc}", []
+    write_log({
+        "level": "INFO", "message": f"Question agent ({channel}) : {question[:200]}",
+        "question": question[:500], "answer": answer[:2000], "channel": channel,
+        "tools_used": [t["tool"] for t in trace], "tool_calls": len(trace),
+        "agent_duration_s": round(time.time() - started, 2),
+    })
+    return answer, trace
+
+
+@app.post("/ask")
+def ask_http():
+    """Même agent que sur Telegram, utilisable avec curl : {"question": "..."}"""
+    question = ((request.get_json(silent=True) or {}).get("question") or "").strip()
+    if not question:
+        return jsonify(error="champ 'question' manquant"), 400
+    answer, trace = ask(question, "http")
+    return jsonify(question=question, answer=answer, tool_calls=trace)
 
 
 # ------------------------------------------------------------------ commandes du bot
@@ -256,11 +290,31 @@ def format_alerts():
         for a in firing)
 
 
+def telegram_question(question, chat_id):
+    if not question:
+        tg_send(COMMANDS["/help"](), chat_id)
+        return
+    tg_send("🔎 J'enquête via les outils MCP...", chat_id)
+    try:
+        requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendChatAction",
+                      json={"chat_id": chat_id, "action": "typing"}, timeout=5)
+    except requests.RequestException:
+        pass
+    answer, trace = ask(question, "telegram")
+    tools = " → ".join(t["tool"] for t in trace) or "aucun"
+    tg_send(f"🤖 {answer}\n\n🧰 Outils MCP utilisés : {tools}", chat_id)
+
+
 COMMANDS = {
     "/status": format_status,
     "/alerts": format_alerts,
-    "/help": lambda: "/status : état de la prod\n/alerts : alertes actives\nLe bot est en lecture seule.",
+    "/help": lambda: ("/status : état de la prod\n/alerts : alertes actives\n"
+                      "Ou pose une question libre, par ex. « pourquoi l'API renvoie des 503 ? » : "
+                      "l'agent enquête avec les outils MCP.\nLe bot est en lecture seule."),
 }
+
+
+BOT_STARTED_AT = time.time()
 
 
 def telegram_polling():
@@ -275,9 +329,19 @@ def telegram_polling():
                 chat_id = str(msg.get("chat", {}).get("id", ""))
                 if chat_id != str(TG_CHAT):  # seul le chat autorisé peut interroger la prod
                     continue
-                command = (msg.get("text") or "").split()[0].split("@")[0] if msg.get("text") else ""
+                if msg.get("date", 0) < BOT_STARTED_AT - 5:  # envoyé pendant que le bot était arrêté
+                    continue
+                text = (msg.get("text") or "").strip()
+                if not text:
+                    continue
+                command = text.split()[0].split("@")[0]
                 if command in COMMANDS:
                     tg_send(COMMANDS[command](), chat_id)
+                elif command == "/start":
+                    tg_send(COMMANDS["/help"](), chat_id)
+                else:
+                    question = text[len("/ask"):].strip() if command == "/ask" else text
+                    threading.Thread(target=telegram_question, args=(question, chat_id), daemon=True).start()
         except Exception as exc:
             print(f"[telegram] polling: {exc}", flush=True)
             time.sleep(5)

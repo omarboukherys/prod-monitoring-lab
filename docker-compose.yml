@@ -70,7 +70,7 @@ services:
       interval: 15s
       timeout: 3s
       retries: 3
-    ports: ["5001:5001"]
+    ports: ["127.0.0.1:5001:5001"]   # /ask et /health, accessibles seulement depuis le PC
     env_file:
       - path: .env          # clés LLM et Telegram (voir .env.example)
         required: false
@@ -78,9 +78,23 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       ELASTIC_URL: http://elasticsearch:9200
       RUNBOOK_DIR: /runbooks
+      MCP_URL: http://mcp-server:8765/mcp
     volumes:
       - app-logs:/var/log/app
       - ./runbooks:/runbooks:ro
+    depends_on: [mcp-server]
+    restart: unless-stopped
+
+  # ------------------------------------------------------------ serveur MCP (outils en lecture seule)
+  mcp-server:
+    build: ./mcp-server
+    container_name: lab-mcp-server
+    ports: ["127.0.0.1:8765:8765"]   # MCP Inspector / clients locaux uniquement
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      ELASTIC_URL: http://elasticsearch:9200
+      RUNBOOK_DIR: /runbooks
+    volumes: ["./runbooks:/runbooks:ro"]
     restart: unless-stopped
 
   pushgateway:

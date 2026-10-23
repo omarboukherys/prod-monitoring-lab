@@ -2,7 +2,7 @@ FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py traffic.py receiver.py ./
+COPY app.py traffic.py receiver.py agent.py ./
 RUN mkdir -p /var/log/app
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --retries=3 \

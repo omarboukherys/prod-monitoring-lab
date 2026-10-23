@@ -27,5 +27,5 @@ jobs:
       - name: Python
         run: |
           pip install -r app/requirements.txt
-          python -m py_compile app/*.py batch/*.py
+          python -m py_compile app/*.py batch/*.py mcp-server/*.py
           python -c "import json; json.load(open('grafana/dashboards/production-overview.json'))"
